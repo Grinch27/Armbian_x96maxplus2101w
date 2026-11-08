@@ -29,6 +29,16 @@ The current upstream OpenWrt and Armbian databases both describe board **ID 506 
 
 Compilation/packaging success means only that an archive with the target board name was generated and gzip-tested. It **does not** mean the 2101W boots or that its network functions correctly.
 
+## KDE Plasma desktop image (built, not hardware-tested)
+
+- [**Download completed KDE image Artifact**](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/runs/42485355132/artifacts/13619496727) — Run [#42485355132](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/runs/42485355132) **Success**, expires **2026-11-15**.
+- [KDE GitHub Actions workflow](.github/workflows/build_kde.yml), [root filesystem installer](scripts/build_kde_image.sh), [full documentation](docs/KDE_IMAGE.md).
+- Provenance: verified [Bookworm 6.12.116 `s905x3-2101` server Artifact from Run #42480891440](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/runs/42480891440).
+- Real ARM64 chroot installation of KDE Plasma X11, SDDM, Xorg, Dolphin, Konsole, Plasma NetworkManager, fonts and Mesa; display-manager and `graphical.target` configured.
+- Actual output: `Armbian_26.11.0_amlogic_s905x3-2101_bookworm_6.12.116_kde-plasma_x11.img.gz`; 10-GiB uncompressed disk-image layout, 1.97-GB compressed Artifact including JSON provenance.
+- Artifact checks: required ARM64 Debian KDE packages installed, Plasma session and SDDM enabled, ext4 read-only fsck, gzip integrity, GitHub upload complete.
+- **No 2101W-specific DTB has been tested; bootloader, HDMI, USB keyboard/mouse, JL2101 1000 Mbps, W522A 2.4/5 GHz STA and physical external boot are unverified.** Builds do not flash the 64-GiB internal eMMC.
+
 ## Hardware diagnostics: do not assume compatibility
 
 | Component | Community findings | Remaining risk |
@@ -48,4 +58,4 @@ See also the [historical 2101 DTS](https://github.com/unifreq/linux-5.15.y/blob/
 3. Only after explicit separate approval, consider a reversible **SD/USB boot test** with UART logs, Ethernet link/DHCP tests and storage enumeration.
 4. Do **not** run `armbian-install`, replace the internal U-Boot, write eMMC, erase partitions or describe the output as device-validated.
 
-**Status:** Actions workflow added; upstream and hardware conclusions documented. A new Actions run is required to establish whether the current upstream image can actually be repackaged successfully.
+**Status (2026-11-08):** Server Run [#42480891440](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/runs/42480891440) and KDE image Run [#42485355132](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/runs/42485355132) both succeeded. Their output is **not 2101W hardware-boot tested** and remains limited to temporary GitHub Actions Artifacts.
