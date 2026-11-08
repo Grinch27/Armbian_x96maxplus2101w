@@ -37,7 +37,6 @@ jobs:
     env:
       SOURCE_RUN_ID: '42480891440'
       SOURCE_ARTIFACT: armbian-2101w-candidate-42480891440
-      KDE_OUTPUT_DIR: ${{ runner.temp }}/kde-output
     steps:
       - name: Checkout KDE build script
         uses: actions/checkout@v4
