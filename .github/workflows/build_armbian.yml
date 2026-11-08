@@ -1,0 +1,217 @@
+# Unknowns: the physical 2101W board revision, JL2101 RGMII timing, W522A Wi-Fi support,
+# and whether any upstream 2101 DTB or U-Boot boots this 4GiB/64GiB device.
+# Risks: mutable upstream main branches, large downloads, and hosted-runner disk pressure.
+# Verification: independently cross-check OpenWrt/Armbian device profiles, verify the
+# selected upstream source image, validate the produced gzip image, then require a
+# separate explicitly approved reversible hardware test before claiming compatibility.
+name: Build Armbian 2101W candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_series:
+        description: "Upstream kernel series (5.x is diagnostic, not recommended for production)"
+        required: true
+        type: choice
+        default: "6.12.y"
+        options:
+          - "6.12.y"
+          - "6.18.y"
+          - "6.6.y"
+          - "5.15.y"
+          - "5.10.y"
+  push:
+    paths:
+      - ".github/workflows/build_armbian.yml"
+  schedule:
+    - cron: "32 6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: armbian-2101w-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Track upstream and package candidate
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 300
+    env:
+      KERNEL_SERIES: ${{ inputs.kernel_series || '6.12.y' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check OpenWrt and Armbian upstream 2101 profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p upstream
+          for project in amlogic-s9xxx-openwrt amlogic-s9xxx-armbian; do
+            sha="$(git ls-remote "https://github.com/ophub/${project}.git" refs/heads/main | cut -f1)"
+            test -n "$sha"
+            echo "${project}=${sha}" >> upstream/sources.txt
+            if [[ "$project" == "amlogic-s9xxx-openwrt" ]]; then
+              model_path="make-openwrt/openwrt-files/common-files/etc/model_database.conf"
+            else
+              model_path="build-armbian/armbian-files/common-files/etc/model_database.conf"
+            fi
+            curl --fail --location --silent --show-error --retry 3 \
+              "https://raw.githubusercontent.com/ophub/${project}/${sha}/${model_path}" \
+              -o "upstream/${project}.conf"
+          done
+          python3 - <<'PY'
+          # Check before editing board mappings: 2101 != proven 2101W support.
+          # Fail closed if OpenWrt and Armbian diverge in DTB, U-Boot or SoC.
+          from pathlib import Path
+
+          expected = {
+              "soc": "s905x3",
+              "dtb": "meson-sm1-x96-max-plus-2101.dtb",
+              "uboot": "u-boot-x96maxplus.bin",
+              "family": "meson-sm1",
+              "board": "s905x3-2101",
+          }
+          profiles = {}
+          for repo in ("amlogic-s9xxx-openwrt", "amlogic-s9xxx-armbian"):
+              lines = Path(f"upstream/{repo}.conf").read_text().splitlines()
+              records = [
+                  [field.strip() for field in line.split(":")]
+                  for line in lines
+                  if line.strip() and not line.lstrip().startswith("#")
+              ]
+              found = [row for row in records if len(row) == 15 and row[13] == expected["board"]]
+              if len(found) != 1:
+                  raise SystemExit(f"{repo}: expected exactly one 2101 board entry, got {len(found)}")
+              row = found[0]
+              fields = {
+                  "soc": row[2], "dtb": row[3], "uboot": row[4],
+                  "family": row[10], "board": row[13],
+              }
+              if fields != expected:
+                  raise SystemExit(f"{repo}: upstream profile changed: {fields}; review before proceeding")
+              profiles[repo] = fields
+              print(f"{repo}: ID {row[0]}, {fields}")
+          if profiles["amlogic-s9xxx-openwrt"] != profiles["amlogic-s9xxx-armbian"]:
+              raise SystemExit("OpenWrt and Armbian profiles differ")
+          print("Upstream board mappings agree; hardware compatibility is NOT established.")
+          PY
+          {
+            echo "### 2101W upstream preflight"
+            echo "Board: \`s905x3-2101\` (upstream lists 4GiB/32GiB, **not proven 2101W**)"
+            echo "DTB: \`meson-sm1-x96-max-plus-2101.dtb\`"
+            echo "Kernel choice: \`${KERNEL_SERIES}\`"
+            echo "OpenWrt and Armbian main SHAs:"
+            cat upstream/sources.txt
+            echo "This preflight does not test JL2101, Wi-Fi or physical boot."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install upstream Armbian rebuild prerequisites
+        if: github.event_name != 'schedule'
+        shell: bash
+        run: |
+          set -euo pipefail
+          free_kib="$(df -Pk / | awk 'END {print $4}')"
+          echo "Available KiB before dependencies: $free_kib"
+          sudo apt-get update
+          deps="$(curl --fail --location --silent --show-error --retry 3 \
+            https://ophub.org/ubuntu2604-build-armbian-depends)"
+          read -r -a packages <<< "$deps"
+          if (( ${#packages[@]} < 30 )); then
+            echo "::error::Dependency list appears incomplete"; exit 1
+          fi
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+          df -h /
+
+      - name: Download latest official upstream Armbian Bookworm ARM64 base image
+        if: github.event_name != 'schedule'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases?per_page=20" \
+            -o upstream/releases.json
+          url="$(jq -r '
+            [.[] | select((.tag_name // "") | startswith("Armbian_bookworm_arm64_server_"))
+              | .assets[]?
+              | select((.name // "") |
+                test("^Armbian_[0-9].*-trunk_bookworm_arm64_[0-9]+[.][0-9]+[.][0-9]+[.]img[.]gz$"))]
+            | sort_by(.created_at) | last | .browser_download_url // empty
+          ' upstream/releases.json)"
+          case "$url" in
+            https://github.com/ophub/amlogic-s9xxx-armbian/releases/download/*) ;;
+            *) echo "::error::No valid upstream Bookworm base image"; exit 1 ;;
+          esac
+          mkdir -p build/output/images
+          filename="${url##*/}"
+          curl --fail --location --show-error --retry 3 --retry-delay 10 \
+            "$url" -o "build/output/images/${filename}"
+          test "$(stat -c%s "build/output/images/${filename}")" -gt 104857600
+          gzip -t "build/output/images/${filename}"
+          echo "BASE_IMAGE=${filename}" >> "$GITHUB_ENV"
+          printf 'base_image=%s\n' "$url" >> upstream/sources.txt
+          df -h /
+
+      - name: Rebuild Armbian for the single upstream JL2101 profile
+        if: github.event_name != 'schedule'
+        uses: ophub/amlogic-s9xxx-armbian@main
+        with:
+          build_target: armbian
+          armbian_path: build/output/images/${{ env.BASE_IMAGE }}
+          armbian_board: s905x3-2101
+          armbian_kernel: ${{ env.KERNEL_SERIES }}
+          auto_kernel: true
+          kernel_repo: ophub/kernel
+          kernel_usage: stable
+          armbian_fstype: ext4
+          builder_name: 2101w-candidate
+
+      - name: Validate non-release candidate
+        if: github.event_name != 'schedule'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${PACKAGED_STATUS:-}" = "success"
+          test -d "${PACKAGED_OUTPUTPATH:-/nonexistent}"
+          shopt -s nullglob
+          images=( "${PACKAGED_OUTPUTPATH}"/*s905x3-2101*.img.gz )
+          if (( ${#images[@]} != 1 )); then
+            echo "::error::Expected exactly one 2101 target image; found ${#images[@]}"
+            ls -la "${PACKAGED_OUTPUTPATH}"
+            exit 1
+          fi
+          candidate="${images[0]}"
+          test "$(stat -c%s "$candidate")" -gt 104857600
+          gzip -t "$candidate"
+          echo "CANDIDATE_PATH=$candidate" >> "$GITHUB_ENV"
+          {
+            echo "### Armbian 2101W experimental candidate"
+            echo "Input: \`${BASE_IMAGE}\`"
+            echo "Output: \`$(basename "$candidate")\`"
+            echo "Compressed bytes: \`$(stat -c%s "$candidate")\`"
+            echo "Status: archive validated; **boot, PHY, Wi-Fi, LED and eMMC untested**."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload temporary candidate image (not a Release)
+        if: github.event_name != 'schedule'
+        uses: actions/upload-artifact@v4
+        with:
+          name: armbian-2101w-candidate-${{ github.run_id }}
+          path: ${{ env.CANDIDATE_PATH }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload upstream provenance (no firmware release)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-2101w-${{ github.run_id }}
+          path: |
+            upstream/sources.txt
+            upstream/amlogic-s9xxx-openwrt.conf
+            upstream/amlogic-s9xxx-armbian.conf
+          if-no-files-found: warn
+          retention-days: 7
