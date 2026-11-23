@@ -1,29 +1,16 @@
-# Requirements: deliver an actual Bookworm ARM64 Armbian KDE Plasma X11 image
-# for X96 MAX+ 2101W S905X3, 4GiB RAM and 64GiB factory eMMC.
-# Ambiguities: s905x3-2101 DTB and kernel 6.12.116 do not yet prove 2101W
-# boot compatibility; HDMI, USB keyboard/mouse, JL2101, W522A are untested.
-# Research: later replace upstream 2101 DTB with verified 2101W board mapping.
-# Risks: source artifact expires, KDE apt mirror availability, disk usage and
-# first-login SDDM account setup; never write to factory eMMC or modify U-Boot.
-# Verification: actual KDE dpkg install in ARM64 image, SDDM graphical target,
-# fsck, compressed image gzip test, temporary GitHub Actions Artifact only.
-name: Build Armbian 2101W KDE Plasma (non-release)
+# Requirements: package KDE Plasma X11 from the Server Artifact in this same Run.
+# Unknowns: no proven 2101W DTB or hardware boot support; current input is dynamic.
+# Risks: seven-day artifact retention, upstream drift, guest filesystem corruption.
+# Verification: server metadata SHA-256, actual ARM64 packages, offline ext4 fsck,
+# gzip integrity, manifest, non-release Artifact. Never write factory eMMC.
+name: Build Armbian 2101W KDE Plasma (reusable, non-release)
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/build_kde.yml'
-      - 'scripts/build_kde_image.sh'
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
   actions: read
-
-concurrency:
-  group: armbian-2101w-kde-${{ github.ref }}
-  cancel-in-progress: false
 
 defaults:
   run:
@@ -31,18 +18,16 @@ defaults:
 
 jobs:
   kde:
-    name: Build real KDE Plasma image from verified ARM64 base
+    name: Install KDE Plasma X11 and verify ext4
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 240
-    env:
-      SOURCE_RUN_ID: '42480891440'
-      SOURCE_ARTIFACT: armbian-2101w-candidate-42480891440
     steps:
       - name: Checkout KDE build script
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Syntax validation and runner prerequisites
+
+      - name: Check ARM64 tooling
         run: |
           set -euo pipefail
           test "$(uname -m)" = aarch64
@@ -51,55 +36,88 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             util-linux parted e2fsprogs pigz gzip python3
           df -h /
-      - name: Download successful original 2101W server candidate
+
+      - name: Download Server artifact from the current Run
         uses: actions/download-artifact@v4
         with:
-          name: armbian-2101w-candidate-42480891440
-          run-id: 42480891440
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          repository: ${{ github.repository }}
+          name: armbian-2101w-candidate-${{ github.run_id }}
           path: ${{ runner.temp }}/kde-base
-      - name: Verify the exact source image
+
+      - name: Verify exact Server input and metadata
         run: |
           set -euo pipefail
-          mapfile -d '' images < <(find "${RUNNER_TEMP}/kde-base" -type f \
-            -name 'Armbian_26.11.0_amlogic_s905x3-2101_bookworm_6.12.116_server_*.img.gz' -print0)
-          if (( ${#images[@]} != 1 )); then
-            echo "::error::Expected exactly one previously verified server image, got ${#images[@]}"
-            exit 1
-          fi
-          gzip -t "${images[0]}"
-          printf 'KDE_INPUT=%s\n' "${images[0]}" >> "${GITHUB_ENV}"
-          printf 'Original upstream packaging Run: [#42480891440](https://github.com/%s/actions/runs/42480891440)\n' \
-            "${GITHUB_REPOSITORY}" >> "${GITHUB_STEP_SUMMARY}"
-      - name: Build and validate KDE desktop inside the ARM64 image
+          python3 - "${RUNNER_TEMP}/kde-base" <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          base = Path(sys.argv[1])
+          meta = json.loads((base / "server-metadata.json").read_text())
+          assert meta["run_id"] == int(os.environ["GITHUB_RUN_ID"])
+          assert meta["commit"] == os.environ["GITHUB_SHA"]
+          assert meta["board"] == "s905x3-2101"
+          assert meta["os"] == "Debian Bookworm ARM64"
+          assert meta["hardware_boot_validated"] is False
+          name = meta["image"]
+          assert name == Path(name).name
+          match = re.fullmatch(
+              r"Armbian_[^_]+_amlogic_s905x3-2101_bookworm_(\d+\.\d+\.\d+)_server_.+\.img\.gz",
+              name,
+          )
+          assert match is not None and match.group(1) == meta["kernel"]
+          image = base / name
+          assert image.is_file() and image.stat().st_size == meta["bytes"]
+          assert len(list(base.glob("*.img.gz"))) == 1
+          digest = hashlib.sha256()
+          with image.open("rb") as stream:
+              for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+                  digest.update(chunk)
+          assert digest.hexdigest() == meta["sha256"], "Server image SHA-256 mismatch"
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"KDE_INPUT={image}\n")
+              output.write(f"KDE_KERNEL={meta['kernel']}\n")
+              output.write(f"KDE_SOURCE_SHA256={meta['sha256']}\n")
+          print("Verified:", image.name, meta["sha256"])
+          PY
+
+      - name: Install KDE and validate ext4 inside the ARM64 image
         timeout-minutes: 190
         run: |
           set -euo pipefail
-          sudo -E bash scripts/build_kde_image.sh \
-            "${KDE_INPUT}" "${RUNNER_TEMP}/kde-output" 42480891440
-      - name: Confirm KDE image and manifest before Artifact publication
+          sudo env RUNNER_TEMP="${RUNNER_TEMP}" SOURCE_COMMIT="${GITHUB_SHA}" \
+            bash scripts/build_kde_image.sh \
+              "${KDE_INPUT}" "${RUNNER_TEMP}/kde-output" \
+              "${GITHUB_RUN_ID}" "${KDE_KERNEL}" "${KDE_SOURCE_SHA256}"
+
+      - name: Confirm KDE candidate manifest before upload
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=("${RUNNER_TEMP}/kde-output/"*kde-plasma_x11.img.gz)
-          (( ${#files[@]} == 1 ))
-          test "$(stat -c %s "${files[0]}")" -gt 300000000
-          gzip -t "${files[0]}"
-          test -s "${RUNNER_TEMP}/kde-output/kde-image-manifest.json"
+          images=( "${RUNNER_TEMP}/kde-output/"*kde-plasma_x11.img.gz )
+          (( ${#images[@]} == 1 ))
+          test "$(stat -c%s "${images[0]}")" -gt 300000000
           python3 - "${RUNNER_TEMP}/kde-output/kde-image-manifest.json" <<'PY'
           import json
+          import os
           import sys
           from pathlib import Path
+
           meta = json.loads(Path(sys.argv[1]).read_text())
-          assert meta["source_run"] == 42480891440
-          assert meta["kernel"] == "6.12.116"
+          assert meta["source_run"] == int(os.environ["GITHUB_RUN_ID"])
+          assert meta["source_commit"] == os.environ["GITHUB_SHA"]
+          assert meta["kernel"] == os.environ["KDE_KERNEL"]
+          assert meta["server_image_sha256"] == os.environ["KDE_SOURCE_SHA256"]
           assert "KDE Plasma X11" in meta["desktop"]
+          assert meta["ext4_fsck_clean"] is True
           assert meta["hardware_boot_validated"] is False
           assert meta["emmc_written"] is False
-          print("Verified KDE image provenance:", meta["desktop"], meta["device"])
+          print("KDE image verified:", meta["desktop"], meta["kernel"])
           PY
-      - name: Upload KDE candidate image (no GitHub Release)
+
+      - name: Upload verified KDE image (no Release)
         uses: actions/upload-artifact@v4
         with:
           name: armbian-2101w-bookworm-kde-${{ github.run_id }}
@@ -109,14 +127,13 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
-      - name: Document scope of completed build
+
+      - name: Document scope
         run: |
           printf '%s\n' \
-            '### 2101W KDE Plasma ARM64 candidate' \
-            'KDE packages installed directly into the Bookworm root filesystem.' \
-            'SDDM set as graphical display manager (X11).' \
-            'Original board mapping: ophub s905x3-2101; kernel 6.12.116.' \
-            '**Offline image validation only. No HDMI, mouse, JL2101 or W522A hardware verification.**' \
-            '**Do not run armbian-install or overwrite factory Android eMMC.**' \
-            'Artifact retention: 7 days; no Release.' \
+            '### 2101W KDE candidate' \
+            "Source Server Run: ${GITHUB_RUN_ID}; kernel: ${KDE_KERNEL}." \
+            'Real ARM64 KDE installation and detached read-only ext4 check required.' \
+            '**Hardware boot, HDMI, JL2101, W522A, LED, eMMC not tested.**' \
+            'Artifact retention: 7 days. No Release and no factory eMMC write.' \
             >> "${GITHUB_STEP_SUMMARY}"

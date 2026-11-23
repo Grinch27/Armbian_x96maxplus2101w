@@ -21,10 +21,10 @@ The current upstream OpenWrt and Armbian databases both describe board **ID 506 
 
 [**Build Armbian 2101W candidate**](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/workflows/build_armbian.yml)
 
-- **Manual (`workflow_dispatch`)**: one experimental Debian Bookworm Server, ext4, `s905x3-2101` image. The default kernel is **6.12.y**, with 6.18.y, 6.6.y, 5.15.y and 5.10.y available as comparison/diagnostic series.
+- **Manual (`workflow_dispatch`)**: a Server image followed by KDE Plasma installation in a dependent reusable Job, using the same Run's Server Artifact and matching metadata. The Server remains an independent intermediate Artifact. Both use Debian Bookworm ARM64, ext4 and `s905x3-2101`. The default kernel is **6.12.y**, with 6.18.y, 6.6.y, 5.15.y and 5.10.y available as comparison/diagnostic series.
 - **On updates to the workflow**: execute a full experimental build using the default kernel.
 - **Daily UTC 06:32 (`schedule`)**: check the latest OpenWrt and Armbian device-profile consistency; no large image is built on the scheduled run.
-- **Build result**: validate the compressed target image and upload a **seven-day GitHub Actions artifact only**. **No public Release, Android flash package, bootloader write or hardware operation.**
+- **Build result**: validate the compressed Server image, verify the Server-to-KDE SHA-256 handoff, require an offline ext4 check, and upload **seven-day GitHub Actions artifacts only**. **No public Release, Android flash package, bootloader write or hardware operation.**
 - **Provenance**: record both upstream commit SHAs and the base-image URL as workflow artifacts/logs. The live `main` refs are deliberately unpinned to track upstream closely, so builds are not intrinsically bit-for-bit reproducible.
 
 Compilation/packaging success means only that an archive with the target board name was generated and gzip-tested. It **does not** mean the 2101W boots or that its network functions correctly.
@@ -36,7 +36,7 @@ Compilation/packaging success means only that an archive with the target board n
 - Provenance: verified [Bookworm 6.12.116 `s905x3-2101` server Artifact from Run #42480891440](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/runs/42480891440).
 - Real ARM64 chroot installation of KDE Plasma X11, SDDM, Xorg, Dolphin, Konsole, Plasma NetworkManager, fonts and Mesa; display-manager and `graphical.target` configured.
 - Actual output: `Armbian_26.11.0_amlogic_s905x3-2101_bookworm_6.12.116_kde-plasma_x11.img.gz`; 10-GiB uncompressed disk-image layout, 1.97-GB compressed Artifact including JSON provenance.
-- Artifact checks: required ARM64 Debian KDE packages installed, Plasma session and SDDM enabled, ext4 read-only fsck, gzip integrity, GitHub upload complete.
+- Historical checks: required ARM64 Debian KDE packages installed, Plasma session and SDDM enabled, gzip integrity and GitHub upload completed. The historical ext4 read-only check reported an in-use filesystem and inconsistent counters; its result **does not prove filesystem integrity**. The new build refuses publication unless a detached, read-only ext4 check passes.
 - **No 2101W-specific DTB has been tested; bootloader, HDMI, USB keyboard/mouse, JL2101 1000 Mbps, W522A 2.4/5 GHz STA and physical external boot are unverified.** Builds do not flash the 64-GiB internal eMMC.
 
 ## Hardware diagnostics: do not assume compatibility
@@ -59,3 +59,5 @@ See also the [historical 2101 DTS](https://github.com/unifreq/linux-5.15.y/blob/
 4. Do **not** run `armbian-install`, replace the internal U-Boot, write eMMC, erase partitions or describe the output as device-validated.
 
 **Status (2026-11-08):** Server Run [#42480891440](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/runs/42480891440) and KDE image Run [#42485355132](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/runs/42485355132) both succeeded. Their output is **not 2101W hardware-boot tested** and remains limited to temporary GitHub Actions Artifacts.
+
+**Build pipeline update (2026-11-23):** `build_armbian.yml` now calls `build_kde.yml` in the same non-scheduled Run; the KDE workflow is reusable rather than a standalone manual/push workflow. The old seven-day Server/KDE artifacts have expired. The updated pipeline has not yet been validated by a completed new Run at the time of this source change.

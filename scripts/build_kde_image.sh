@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Requirements: install real KDE Plasma X11 into a proven Armbian Bookworm ARM64
-# s905x3-2101 / kernel 6.12.116 disk image for X96 MAX+ 2101W 4GB/64GB.
+# dynamically selected s905x3-2101 kernel for X96 MAX+ 2101W 4GB/64GB.
 # Unknowns: exact 2101W DTB, HDMI, acceleration, USB, JL2101, W522A and
 # eMMC remain untested; this is an external-boot candidate only.
 # Research: image's original partition table, apt availability, actual USB
@@ -15,50 +15,65 @@ if (( EUID != 0 )) || [[ "$(uname -m)" != aarch64 ]]; then
   echo "Requires an isolated ARM64 GitHub runner with root access." >&2
   exit 1
 fi
-if (( $# != 3 )) || [[ "$3" != 42480891440 ]]; then
-  echo "Usage: $0 ORIGINAL.img.gz OUTPUT_DIR 42480891440" >&2
+if (( $# != 5 )) || ! [[ "$3" =~ ^[0-9]+$ && "$4" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$5" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "Usage: $0 SERVER.img.gz OUTPUT_DIR RUN_ID KERNEL SERVER_SHA256" >&2
   exit 2
 fi
-case "$(basename -- "$1")" in
-  Armbian_26.11.0_amlogic_s905x3-2101_bookworm_6.12.116_server_*.img.gz) ;;
-  *) echo "Unexpected stock-derived Armbian source filename." >&2; exit 1 ;;
-esac
+source_name="$(basename -- "$1")"
+if [[ ! "$source_name" =~ ^Armbian_([^_]+)_amlogic_s905x3-2101_bookworm_([0-9]+\.[0-9]+\.[0-9]+)_server_.+\.img\.gz$ ]] || [[ "${BASH_REMATCH[2]:-}" != "$4" ]]; then
+  echo "Unexpected Server filename or kernel mismatch." >&2
+  exit 1
+fi
+readonly RELEASE="${BASH_REMATCH[1]}"
+readonly KERNEL="$4"
+readonly SOURCE_RUN_ID="$3"
+readonly INPUT_SHA256="$5"
 
 readonly INPUT="$(realpath "$1")"
 readonly OUTPUT="$(realpath -m "$2")"
 readonly WORK="$(mktemp -d "${RUNNER_TEMP:-/tmp}/armbian-kde.XXXXXXXX")"
-readonly RAW="${WORK}/Armbian_26.11.0_amlogic_s905x3-2101_bookworm_6.12.116_kde-plasma_x11.img"
+readonly RAW="${WORK}/Armbian_${RELEASE}_amlogic_s905x3-2101_bookworm_${KERNEL}_kde-plasma_x11.img"
 readonly ROOT="${WORK}/rootfs"
 LOOP=""
+CHECK_LOOP=""
+TEMP_GZ=""
 ROOT_MOUNTED=0
 RESOLV_SAVED=0
 POLICY_SAVED=0
+RESOLV_CHANGED=0
+POLICY_CHANGED=0
 
 restore_guest_files() {
   if (( ROOT_MOUNTED == 0 )); then return; fi
-  rm -f "${ROOT}/usr/sbin/policy-rc.d"
-  if (( POLICY_SAVED )); then
-    mv -f "${ROOT}/usr/sbin/policy-rc.d.original-kde" "${ROOT}/usr/sbin/policy-rc.d"
-    POLICY_SAVED=0
+  if (( POLICY_CHANGED )); then
+    rm -f "${ROOT}/usr/sbin/policy-rc.d"
+    if (( POLICY_SAVED )); then
+      mv -f "${ROOT}/usr/sbin/policy-rc.d.original-kde" "${ROOT}/usr/sbin/policy-rc.d"
+      POLICY_SAVED=0
+    fi
+    POLICY_CHANGED=0
   fi
-  rm -f "${ROOT}/etc/resolv.conf"
-  if (( RESOLV_SAVED )); then
-    mv -f "${ROOT}/etc/resolv.conf.original-kde" "${ROOT}/etc/resolv.conf"
-    RESOLV_SAVED=0
+  if (( RESOLV_CHANGED )); then
+    rm -f "${ROOT}/etc/resolv.conf"
+    if (( RESOLV_SAVED )); then
+      mv -f "${ROOT}/etc/resolv.conf.original-kde" "${ROOT}/etc/resolv.conf"
+      RESOLV_SAVED=0
+    fi
+    RESOLV_CHANGED=0
   fi
 }
 cleanup() {
   local rc="$?"
   trap - EXIT
   set +e
-  if (( ROOT_MOUNTED )); then
-    restore_guest_files
-    for dir in run sys proc dev; do
-      mountpoint -q "${ROOT}/${dir}" && umount -R "${ROOT}/${dir}"
-    done
-    umount "${ROOT}"
-  fi
+  if (( ROOT_MOUNTED )); then restore_guest_files; fi
+  for dir in run sys proc dev; do
+    mountpoint -q "${ROOT}/${dir}" && umount -R "${ROOT}/${dir}"
+  done
+  mountpoint -q "${ROOT}" && umount "${ROOT}"
+  [[ -n "${CHECK_LOOP}" ]] && losetup -d "${CHECK_LOOP}"
   [[ -n "${LOOP}" ]] && losetup -d "${LOOP}"
+  [[ -n "${TEMP_GZ}" ]] && rm -f -- "${TEMP_GZ}"
   if (( rc == 0 )); then
     rm -rf -- "${WORK}"
   else
@@ -69,7 +84,6 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "${OUTPUT}" "${ROOT}"
-gzip -t "${INPUT}"
 available="$(df -Pk "${WORK}" | awk 'END {print $4}')"
 if (( available < 16 * 1024 * 1024 )); then
   echo "Require at least 16 GiB free for rootfs expansion and KDE." >&2
@@ -93,6 +107,10 @@ print("Original partition layout:", parts)
 PY
 
 # A 10-GiB *sparse file* supports Plasma; it is not the 64-GiB device eMMC.
+if (( $(stat -c%s "${RAW}") > 10 * 1024 * 1024 * 1024 )); then
+  echo "Refusing to truncate an input image larger than 10 GiB." >&2
+  exit 1
+fi
 truncate -s 10G "${RAW}"
 parted -s "${RAW}" resizepart 2 100%
 LOOP="$(losetup --find --show --partscan "${RAW}")"
@@ -126,11 +144,13 @@ if [[ -e "${ROOT}/etc/resolv.conf" || -L "${ROOT}/etc/resolv.conf" ]]; then
   mv "${ROOT}/etc/resolv.conf" "${ROOT}/etc/resolv.conf.original-kde"
   RESOLV_SAVED=1
 fi
+RESOLV_CHANGED=1
 cp -L /etc/resolv.conf "${ROOT}/etc/resolv.conf"
 if [[ -e "${ROOT}/usr/sbin/policy-rc.d" ]]; then
   mv "${ROOT}/usr/sbin/policy-rc.d" "${ROOT}/usr/sbin/policy-rc.d.original-kde"
   POLICY_SAVED=1
 fi
+POLICY_CHANGED=1
 printf '#!/bin/sh\nexit 101\n' > "${ROOT}/usr/sbin/policy-rc.d"
 chmod 0755 "${ROOT}/usr/sbin/policy-rc.d"
 
@@ -165,11 +185,11 @@ done
   { echo "SDDM not enabled" >&2; exit 1; }
 
 mkdir -p "${ROOT}/usr/local/share/x96-2101w"
-cat > "${ROOT}/usr/local/share/x96-2101w/KDE-BUILD-NOTES.txt" <<'EOF'
-KDE Plasma X11 on Armbian Bookworm ARM64, kernel 6.12.116.
+cat > "${ROOT}/usr/local/share/x96-2101w/KDE-BUILD-NOTES.txt" <<EOF
+KDE Plasma X11 on Armbian Bookworm ARM64, kernel ${KERNEL}.
 Experimental S905X3 / s905x3-2101 candidate for X96 MAX+ 2101W
 (4 GiB RAM / 64 GiB internal eMMC).
-Original server image: GitHub Actions Run 42480891440.
+Original server image: GitHub Actions Run ${SOURCE_RUN_ID}.
 KDE was installed within the ARM64 image before compression.
 Factory Android eMMC is NOT modified by this build.
 HDMI, graphics acceleration, JL2101 1000Mbps, W522A, USB HID and
@@ -184,16 +204,40 @@ restore_guest_files
 for d in run sys proc dev; do umount -R "${ROOT}/${d}"; done
 umount "${ROOT}"
 ROOT_MOUNTED=0
-# Read-only fsck after complete shutdown of all image runtime mounts.
-e2fsck -fn "${ROOT_PART}"
+# Detach the writable loop, then attach a new read-only loop for offline fsck.
+if findmnt -rn --source "${ROOT_PART}" >/dev/null || mountpoint -q "${ROOT}"; then
+  echo "Root filesystem still mounted; refusing offline fsck." >&2
+  exit 1
+fi
 losetup -d "${LOOP}"
 LOOP=""
+CHECK_LOOP="$(losetup --read-only --find --show --partscan "${RAW}")"
+udevadm settle
+CHECK_PART="${CHECK_LOOP}p2"
+[[ -b "${CHECK_PART}" ]] || { echo "Missing read-only root partition" >&2; exit 1; }
+if findmnt -rn --source "${CHECK_PART}" >/dev/null; then
+  echo "Read-only check partition unexpectedly mounted." >&2
+  exit 1
+fi
+if ! fsck_output="$(e2fsck -fn "${CHECK_PART}" 2>&1)"; then
+  printf '%s\n' "${fsck_output}" >&2
+  echo "Offline ext4 check returned an error." >&2
+  exit 1
+fi
+printf '%s\n' "${fsck_output}"
+if grep -Eiq '(Warning|in use|skipping journal recovery|count wrong|orphan_present|filesystem still has errors)' <<< "${fsck_output}"; then
+  echo "Offline ext4 check reported an unsafe filesystem state." >&2
+  exit 1
+fi
+losetup -d "${CHECK_LOOP}"
+CHECK_LOOP=""
 
 DEST="${OUTPUT}/$(basename "${RAW}").gz"
-[[ ! -e "${DEST}" ]] || { echo "Refusing overwrite" >&2; exit 1; }
-pigz -6 -p 4 -c "${RAW}" > "${DEST}"
-gzip -t "${DEST}"
-python3 - "${RAW}" "${OUTPUT}/kde-image-manifest.json" <<'PY'
+TEMP_GZ="${DEST}.partial"
+[[ ! -e "${DEST}" && ! -e "${TEMP_GZ}" ]] || { echo "Refusing overwrite" >&2; exit 1; }
+pigz -6 -p 4 -c "${RAW}" > "${TEMP_GZ}"
+gzip -t "${TEMP_GZ}"
+python3 - "${RAW}" "${OUTPUT}/kde-image-manifest.json" "${SOURCE_RUN_ID}" "${KERNEL}" "${INPUT_SHA256}" <<'PY'
 import json
 import subprocess
 import sys
@@ -202,10 +246,13 @@ image, dest = Path(sys.argv[1]), Path(sys.argv[2])
 parts = json.loads(subprocess.check_output(["sfdisk", "--json", str(image)], text=True))["partitiontable"]["partitions"]
 payload = {
  "state": "KDE installed and statically validated; hardware not tested",
- "source_run": 42480891440,
+ "source_run": int(sys.argv[3]),
+ "source_commit": __import__("os").environ["SOURCE_COMMIT"],
+ "server_image_sha256": sys.argv[5],
+ "ext4_fsck_clean": True,
  "device": "X96 MAX+ 2101W, 4GiB RAM/64GiB eMMC",
  "board": "ophub s905x3-2101 (2101W custom DTB not yet validated)",
- "kernel": "6.12.116",
+ "kernel": sys.argv[4],
  "os": "Debian Bookworm ARM64",
  "desktop": "KDE Plasma X11, SDDM, Konsole, Dolphin",
  "image_bytes": image.stat().st_size,
@@ -216,4 +263,6 @@ payload = {
 dest.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 print(json.dumps(payload, ensure_ascii=False, indent=2))
 PY
+mv -- "${TEMP_GZ}" "${DEST}"
+TEMP_GZ=""
 ls -lh "${DEST}" "${OUTPUT}/kde-image-manifest.json"

@@ -23,11 +23,14 @@ on:
   push:
     paths:
       - ".github/workflows/build_armbian.yml"
+      - ".github/workflows/build_kde.yml"
+      - "scripts/build_kde_image.sh"
   schedule:
     - cron: "32 6 * * *"
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: armbian-2101w-${{ github.ref }}
@@ -186,6 +189,43 @@ jobs:
           test "$(stat -c%s "$candidate")" -gt 104857600
           gzip -t "$candidate"
           echo "CANDIDATE_PATH=$candidate" >> "$GITHUB_ENV"
+          python3 - "$candidate" <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          image = Path(sys.argv[1])
+          match = re.fullmatch(
+              r"Armbian_[^_]+_amlogic_s905x3-2101_bookworm_(\d+\.\d+\.\d+)_server_.+\.img\.gz",
+              image.name,
+          )
+          if match is None:
+              raise SystemExit(f"Unexpected candidate name: {image.name}")
+          digest = hashlib.sha256()
+          with image.open("rb") as stream:
+              for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+                  digest.update(chunk)
+          metadata = {
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "commit": os.environ["GITHUB_SHA"],
+              "board": "s905x3-2101",
+              "os": "Debian Bookworm ARM64",
+              "image": image.name,
+              "kernel": match.group(1),
+              "bytes": image.stat().st_size,
+              "sha256": digest.hexdigest(),
+              "base_image": os.environ["BASE_IMAGE"],
+              "hardware_boot_validated": False,
+          }
+          (image.parent / "server-metadata.json").write_text(
+              json.dumps(metadata, indent=2) + "\n"
+          )
+          print("Server candidate:", metadata["kernel"], metadata["sha256"])
+          PY
+          echo "SERVER_METADATA=$(dirname "$candidate")/server-metadata.json" >> "$GITHUB_ENV"
           {
             echo "### Armbian 2101W experimental candidate"
             echo "Input: \`${BASE_IMAGE}\`"
@@ -199,7 +239,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: armbian-2101w-candidate-${{ github.run_id }}
-          path: ${{ env.CANDIDATE_PATH }}
+          path: |
+            ${{ env.CANDIDATE_PATH }}
+            ${{ env.SERVER_METADATA }}
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -215,3 +257,12 @@ jobs:
             upstream/amlogic-s9xxx-armbian.conf
           if-no-files-found: warn
           retention-days: 7
+  
+  kde:
+    name: Build KDE from this Run's Server image
+    needs: build
+    if: ${{ github.event_name != 'schedule' }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/build_kde.yml
