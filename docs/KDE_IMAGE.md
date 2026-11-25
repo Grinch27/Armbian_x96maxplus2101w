@@ -15,7 +15,7 @@
 - `apt-get update`，安装 `kde-plasma-desktop`、`sddm`、`xserver-xorg`、`plasma-nm`、`konsole`、`dolphin`、`dbus-x11`、Noto 字体和软件渲染 Mesa 库。
 - 显示会话优先采用 **X11**，启用 `graphical.target` + SDDM；不假定 Mali GPU/DRM 已通过实机驱动验收。
 - 在 chroot 内使用 `policy-rc.d` 临时拒绝启动服务，安装结束后精确恢复原始文件、卸载所有挂载并断开可写 loop，再用独立只读 loop 执行 ext4 检查；如检查警告或失败，则阻止 gzip 成品发布。保存 Server 镜像摘要与 KDE provenance JSON。
-- 构建成功时输出 `*.img.gz` 与 `kde-image-manifest.json` 至有效期七天的 **GitHub Actions Artifact**。不会创建正式 Release。
+- 构建成功时输出 `*.img.gz` 与 `kde-image-manifest.json` 至有效期三天的 **GitHub Actions Artifact**。不会创建正式 Release。
 
 ## 外部介质与账户准备
 
@@ -49,4 +49,4 @@
 
 ## 2026-11-25 完整构建基线与每日构建
 
-[Run #45527769606](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/runs/45527769606) 完整通过 Server → KDE，实际内核为 `6.12.119`。私有 mount namespace 与 guest PID namespace 隔离后，loop 正常释放；可写 `e2fsck -pf` 与独立只读 `e2fsck -fn` 均返回 0，KDE Artifact 成功上传。每日 UTC 06:32 定时执行同一完整流程，仍保留七天 Artifact，不发布正式 Release，不写设备 eMMC。首次及连续定时完整构建尚待验证。
+[Run #45527769606](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/runs/45527769606) 完整通过 Server → KDE，实际内核为 `6.12.119`。私有 mount namespace 与 guest PID namespace 隔离后，loop 正常释放；可写 `e2fsck -pf` 与独立只读 `e2fsck -fn` 均返回 0，KDE Artifact 成功上传。每日 UTC 06:32 定时执行同一完整流程，保留三天 Artifact，不发布正式 Release，不写设备 eMMC。首次及连续定时完整构建尚待验证。
