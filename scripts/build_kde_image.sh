@@ -199,38 +199,82 @@ provisioning on a console before expecting SDDM user login.
 EOF
 chroot "${ROOT}" apt-get clean
 rm -rf "${ROOT}/var/lib/apt/lists/"*
-sync
 restore_guest_files
+sync
 for d in run sys proc dev; do umount -R "${ROOT}/${d}"; done
 umount "${ROOT}"
 ROOT_MOUNTED=0
-# Detach the writable loop, then attach a new read-only loop for offline fsck.
 if findmnt -rn --source "${ROOT_PART}" >/dev/null || mountpoint -q "${ROOT}"; then
   echo "Root filesystem still mounted; refusing offline fsck." >&2
   exit 1
 fi
+
+# losetup may defer destruction while a device still has open references.
+# Do not attach another loop to the same image until the previous one is gone.
+require_detached_image() {
+  local associations
+  udevadm settle --timeout=30
+  associations="$(losetup --associated "${RAW}")"
+  if [[ -n "${associations}" ]]; then
+    printf 'Image still attached; refusing to proceed:\n%s\n' "${associations}" >&2
+    return 1
+  fi
+}
+
+sync
 losetup -d "${LOOP}"
 LOOP=""
+require_detached_image
+
+# Recover the journal and repair only problems e2fsck considers safe to fix
+# automatically, on the unmounted writable temporary image (never real media).
+LOOP="$(losetup --find --show --partscan "${RAW}")"
+udevadm settle --timeout=30
+ROOT_PART="${LOOP}p2"
+[[ -b "${ROOT_PART}" ]] || { echo "Missing recovery root partition" >&2; exit 1; }
+if findmnt -rn --source "${ROOT_PART}" >/dev/null; then
+  echo "Recovery partition unexpectedly mounted." >&2
+  exit 1
+fi
+repair_rc=0
+repair_output="$(LC_ALL=C e2fsck -pf "${ROOT_PART}" 2>&1)" || repair_rc=$?
+printf '%s\nRecovery e2fsck exit code: %s\n' "${repair_output}" "${repair_rc}"
+case "${repair_rc}" in
+  0|1) ;;
+  *) echo "Offline ext4 recovery failed." >&2; exit "${repair_rc}" ;;
+esac
+if grep -Eiq '(in use|is mounted|skipping journal recovery|unexpected inconsistency|filesystem still has errors)' <<< "${repair_output}"; then
+  echo "Offline ext4 recovery reported an unsafe filesystem state." >&2
+  exit 1
+fi
+sync
+losetup -d "${LOOP}"
+LOOP=""
+require_detached_image
+
+# Independently reattach read-only and require a clean full check.
 CHECK_LOOP="$(losetup --read-only --find --show --partscan "${RAW}")"
-udevadm settle
+udevadm settle --timeout=30
 CHECK_PART="${CHECK_LOOP}p2"
 [[ -b "${CHECK_PART}" ]] || { echo "Missing read-only root partition" >&2; exit 1; }
-if findmnt -rn --source "${CHECK_PART}" >/dev/null; then
-  echo "Read-only check partition unexpectedly mounted." >&2
+if findmnt -rn --source "${CHECK_PART}" >/dev/null || [[ "$(blockdev --getro "${CHECK_PART}")" != 1 ]]; then
+  echo "Check partition is mounted or not read-only." >&2
   exit 1
 fi
-if ! fsck_output="$(e2fsck -fn "${CHECK_PART}" 2>&1)"; then
-  printf '%s\n' "${fsck_output}" >&2
+fsck_rc=0
+fsck_output="$(LC_ALL=C e2fsck -fn "${CHECK_PART}" 2>&1)" || fsck_rc=$?
+printf '%s\nRead-only e2fsck exit code: %s\n' "${fsck_output}" "${fsck_rc}"
+if (( fsck_rc != 0 )); then
   echo "Offline ext4 check returned an error." >&2
-  exit 1
+  exit "${fsck_rc}"
 fi
-printf '%s\n' "${fsck_output}"
 if grep -Eiq '(Warning|in use|skipping journal recovery|count wrong|orphan_present|filesystem still has errors)' <<< "${fsck_output}"; then
   echo "Offline ext4 check reported an unsafe filesystem state." >&2
   exit 1
 fi
 losetup -d "${CHECK_LOOP}"
 CHECK_LOOP=""
+require_detached_image
 
 DEST="${OUTPUT}/$(basename "${RAW}").gz"
 TEMP_GZ="${DEST}.partial"
