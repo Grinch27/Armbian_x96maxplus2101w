@@ -212,13 +212,24 @@ fi
 # losetup may defer destruction while a device still has open references.
 # Do not attach another loop to the same image until the previous one is gone.
 require_detached_image() {
-  local associations
-  udevadm settle --timeout=30
-  associations="$(losetup --associated "${RAW}")"
-  if [[ -n "${associations}" ]]; then
-    printf 'Image still attached; refusing to proceed:\n%s\n' "${associations}" >&2
-    return 1
+  local associations attempt device
+  udevadm settle --timeout=30 || return 1
+  # The udev queue may settle before the kernel releases the last reference.
+  for ((attempt = 0; attempt <= 30; attempt++)); do
+    associations="$(losetup --associated "${RAW}")" || return 1
+    if [[ -z "${associations}" ]]; then
+      printf 'Image loop associations released after %s second(s).\n' "${attempt}"
+      return 0
+    fi
+    if (( attempt < 30 )); then sleep 1; fi
+  done
+  printf 'Image still attached after 30 seconds; refusing to proceed:\n%s\n' "${associations}" >&2
+  device="${associations%%:*}"
+  lsblk -o NAME,TYPE,RO,MOUNTPOINTS "${device}" >&2 || true
+  if command -v fuser >/dev/null; then
+    fuser -v "${device}" "${device}p2" >&2 || true
   fi
+  return 1
 }
 
 sync
