@@ -1,6 +1,6 @@
 # Requirements: package KDE Plasma X11 from the Server Artifact in this same Run.
 # Unknowns: no proven 2101W DTB or hardware boot support; current input is dynamic.
-# Risks: three-day artifact retention, upstream drift, guest filesystem corruption.
+# Risks: one-day artifact retention, upstream drift, guest filesystem corruption.
 # Verification: server metadata SHA-256, actual ARM64 packages, offline ext4 fsck,
 # gzip integrity, manifest, non-release Artifact. Never write factory eMMC.
 name: Build Armbian 2101W KDE Plasma (reusable, non-release)
@@ -126,7 +126,7 @@ jobs:
             ${{ runner.temp }}/kde-output/kde-image-manifest.json
           if-no-files-found: error
           compression-level: 0
-          retention-days: 3
+          retention-days: 1
 
       - name: Document scope
         run: |
@@ -135,5 +135,5 @@ jobs:
             "Source Server Run: ${GITHUB_RUN_ID}; kernel: ${KDE_KERNEL}." \
             'Real ARM64 KDE installation and detached read-only ext4 check required.' \
             '**Hardware boot, HDMI, JL2101, W522A, LED, eMMC not tested.**' \
-            'Artifact retention: 3 days. No Release and no factory eMMC write.' \
+            'Artifact retention: 1 day. No Release and no factory eMMC write.' \
             >> "${GITHUB_STEP_SUMMARY}"

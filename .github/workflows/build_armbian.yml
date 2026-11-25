@@ -239,7 +239,7 @@ jobs:
             ${{ env.SERVER_METADATA }}
           if-no-files-found: error
           compression-level: 0
-          retention-days: 3
+          retention-days: 1
 
       - name: Upload upstream provenance (no firmware release)
         if: always()
@@ -251,7 +251,7 @@ jobs:
             upstream/amlogic-s9xxx-openwrt.conf
             upstream/amlogic-s9xxx-armbian.conf
           if-no-files-found: warn
-          retention-days: 3
+          retention-days: 1
   
   kde:
     name: Build KDE from this Run's Server image

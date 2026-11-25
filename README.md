@@ -23,8 +23,8 @@ The current upstream OpenWrt and Armbian databases both describe board **ID 506 
 
 - **Manual (`workflow_dispatch`)**: a Server image followed by KDE Plasma installation in a dependent reusable Job, using the same Run's Server Artifact and matching metadata. The Server remains an independent intermediate Artifact. Both use Debian Bookworm ARM64, ext4 and `s905x3-2101`. The default kernel is **6.12.y**, with 6.18.y, 6.6.y, 5.15.y and 5.10.y available as comparison/diagnostic series.
 - **On updates to the workflow**: execute a full experimental build using the default kernel.
-- **Daily UTC 06:32 (`schedule`)**: run the same full Server → KDE pipeline with the default `6.12.y` kernel, including upstream profile checks, strict ext4 verification, and three-day artifacts. Actual start may be delayed by GitHub Actions.
-- **Build result**: validate the compressed Server image, verify the Server-to-KDE SHA-256 handoff, require an offline ext4 check, and upload **three-day GitHub Actions artifacts only**. **No public Release, Android flash package, bootloader write or hardware operation.**
+- **Daily UTC 06:32 (`schedule`)**: run the same full Server → KDE pipeline with the default `6.12.y` kernel, including upstream profile checks, strict ext4 verification, and one-day artifacts. Actual start may be delayed by GitHub Actions.
+- **Build result**: validate the compressed Server image, verify the Server-to-KDE SHA-256 handoff, require an offline ext4 check, and upload **one-day GitHub Actions artifacts only**. **No public Release, Android flash package, bootloader write or hardware operation.**
 - **Provenance**: record both upstream commit SHAs and the base-image URL as workflow artifacts/logs. The live `main` refs are deliberately unpinned to track upstream closely, so builds are not intrinsically bit-for-bit reproducible.
 
 Compilation/packaging success means only that an archive with the target board name was generated and gzip-tested. It **does not** mean the 2101W boots or that its network functions correctly.
