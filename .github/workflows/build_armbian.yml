@@ -124,7 +124,7 @@ jobs:
           if (( ${#packages[@]} < 30 )); then
             echo "::error::Dependency list appears incomplete"; exit 1
           fi
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
           df -h /
 
       - name: Download latest official upstream Armbian Bookworm ARM64 base image
