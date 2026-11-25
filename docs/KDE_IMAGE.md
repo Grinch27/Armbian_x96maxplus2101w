@@ -8,7 +8,7 @@
 
 ## 实际桌面安装（非首次启动联网安装）
 
-- 工作流：[Build Armbian 2101W candidate](../.github/workflows/build_armbian.yml) 在同次非定时 Run 内调用 [KDE 可复用工作流](../.github/workflows/build_kde.yml)，使用该 Run 的 Server Artifact，不再固定旧 Run ID。
+- 工作流：[Build Armbian 2101W candidate](../.github/workflows/build_armbian.yml) 在同次 Run（手动、Push 或每日定时）内调用 [KDE 可复用工作流](../.github/workflows/build_kde.yml)，使用该 Run 的 Server Artifact，不再固定旧 Run ID。
 - 离线镜像处理：[scripts/build_kde_image.sh](../scripts/build_kde_image.sh)
 - 运行环境：独立 `ubuntu-26.04-arm` GitHub Runner，执行原生 arm64 chroot，而非在 x86 上安装错误的用户态库。
 - 解压已核验的服务器固件映像，检查 MBR 分区表并仅扩展**映像文件内部的第二个 ext4 分区**，第一个 FAT 启动分区保持不变。
@@ -46,3 +46,7 @@
 - 旧版独立 KDE 工作流固定引用 Run `42480891440`，其七天 Artifact 已过期。新入口统一为 Server → KDE 同一 Run 的依赖 Job；当前定时预检仍不构建镜像。
 - 历史 KDE #42485355132 的 `e2fsck -fn` 曾报告 `in use`、跳过日志恢复和空闲计数不符。虽然运行显示 Success，**旧镜像的 ext4 完整性未得到有效确认**。
 - 新工作流要求 Server 内容 SHA-256 一致、实际内核版本与 manifest 一致、文件系统彻底卸载后的只读检查干净、gzip 验证通过，才允许上传七天 Artifact。新流程尚待 GitHub Actions 实跑确认。
+
+## 2026-11-25 完整构建基线与每日构建
+
+[Run #45527769606](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/runs/45527769606) 完整通过 Server → KDE，实际内核为 `6.12.119`。私有 mount namespace 与 guest PID namespace 隔离后，loop 正常释放；可写 `e2fsck -pf` 与独立只读 `e2fsck -fn` 均返回 0，KDE Artifact 成功上传。每日 UTC 06:32 定时执行同一完整流程，仍保留七天 Artifact，不发布正式 Release，不写设备 eMMC。首次及连续定时完整构建尚待验证。

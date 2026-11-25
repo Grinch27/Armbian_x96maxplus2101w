@@ -23,7 +23,7 @@ The current upstream OpenWrt and Armbian databases both describe board **ID 506 
 
 - **Manual (`workflow_dispatch`)**: a Server image followed by KDE Plasma installation in a dependent reusable Job, using the same Run's Server Artifact and matching metadata. The Server remains an independent intermediate Artifact. Both use Debian Bookworm ARM64, ext4 and `s905x3-2101`. The default kernel is **6.12.y**, with 6.18.y, 6.6.y, 5.15.y and 5.10.y available as comparison/diagnostic series.
 - **On updates to the workflow**: execute a full experimental build using the default kernel.
-- **Daily UTC 06:32 (`schedule`)**: check the latest OpenWrt and Armbian device-profile consistency; no large image is built on the scheduled run.
+- **Daily UTC 06:32 (`schedule`)**: run the same full Server → KDE pipeline with the default `6.12.y` kernel, including upstream profile checks, strict ext4 verification, and seven-day artifacts. Actual start may be delayed by GitHub Actions.
 - **Build result**: validate the compressed Server image, verify the Server-to-KDE SHA-256 handoff, require an offline ext4 check, and upload **seven-day GitHub Actions artifacts only**. **No public Release, Android flash package, bootloader write or hardware operation.**
 - **Provenance**: record both upstream commit SHAs and the base-image URL as workflow artifacts/logs. The live `main` refs are deliberately unpinned to track upstream closely, so builds are not intrinsically bit-for-bit reproducible.
 
@@ -61,3 +61,5 @@ See also the [historical 2101 DTS](https://github.com/unifreq/linux-5.15.y/blob/
 **Status (2026-11-08):** Server Run [#42480891440](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/runs/42480891440) and KDE image Run [#42485355132](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/runs/42485355132) both succeeded. Their output is **not 2101W hardware-boot tested** and remains limited to temporary GitHub Actions Artifacts.
 
 **Build pipeline update (2026-11-23):** `build_armbian.yml` now calls `build_kde.yml` in the same non-scheduled Run; the KDE workflow is reusable rather than a standalone manual/push workflow. The old seven-day Server/KDE artifacts have expired. The updated pipeline has not yet been validated by a completed new Run at the time of this source change.
+
+**Build pipeline update (2026-11-25):** [Run #45527769606](https://github.com/Grinch27/Armbian_x96maxplus2101w/actions/runs/45527769606) completed both Server and KDE builds with kernel 6.12.119; writable recovery and independent read-only ext4 verification both returned 0. The daily schedule now runs this same full pipeline. Scheduled-run stability remains to be verified. No hardware boot or eMMC write has been tested.
