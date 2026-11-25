@@ -5,7 +5,9 @@
 # eMMC remain untested; this is an external-boot candidate only.
 # Research: image's original partition table, apt availability, actual USB
 # boot and SDDM once a separately authorized hardware test is approved.
-# Risks: old first-boot credentials, chroot package hooks, mount cleanup,
+# Risks: guest package hooks may retain processes or mount namespaces;
+# verify private mount/PID namespace support and loop release on ARM64.
+# Other risks: old first-boot credentials, chroot package hooks, mount cleanup,
 # insufficient disk, or GUI unsupported by kernel graphics drivers.
 # Verification: source gzip, DOS partition structure, native arm64 dpkg,
 # real KDE packages and SDDM, rootfs fsck, output gzip. No device writes.
@@ -154,24 +156,34 @@ POLICY_CHANGED=1
 printf '#!/bin/sh\nexit 101\n' > "${ROOT}/usr/sbin/policy-rc.d"
 chmod 0755 "${ROOT}/usr/sbin/policy-rc.d"
 
+# Each guest command gets its own PID and mount namespaces. When its PID 1
+# exits, remaining guest descendants are killed by the kernel. The private
+# proc mount exposes that PID namespace, not the host's process tree.
+isolated_guest_command() {
+  unshare --pid --fork --kill-child --mount-proc="${ROOT}/proc" -- "$@"
+}
+guest() {
+  isolated_guest_command chroot "${ROOT}" "$@"
+}
+
 # Install packages for the guest system; prohibit starting guest daemons
 # during build. Use X11 to avoid assuming Wayland GPU/DRM support.
-chroot "${ROOT}" /bin/sh -c \
+guest /bin/sh -c \
   'printf "sddm shared/default-x-display-manager select sddm\n" | debconf-set-selections'
-chroot "${ROOT}" env DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none \
+guest env DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none \
   apt-get update
-chroot "${ROOT}" env DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none \
+guest env DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none \
   apt-get install -y --no-install-recommends \
   kde-plasma-desktop sddm xserver-xorg xserver-xorg-video-fbdev xinit \
   plasma-nm konsole dolphin dbus-x11 fonts-noto-core fonts-noto-cjk \
   libgl1-mesa-dri network-manager
 
 printf '%s\n' /usr/bin/sddm > "${ROOT}/etc/X11/default-display-manager"
-systemctl --root="${ROOT}" set-default graphical.target
-systemctl --root="${ROOT}" enable sddm.service
+isolated_guest_command systemctl --root="${ROOT}" set-default graphical.target
+isolated_guest_command systemctl --root="${ROOT}" enable sddm.service
 
 for pkg in kde-plasma-desktop sddm xserver-xorg plasma-nm konsole dolphin; do
-  status="$(chroot "${ROOT}" dpkg-query -W -f='${Status}' "${pkg}")"
+  status="$(guest dpkg-query -W -f='${Status}' "${pkg}")"
   [[ "${status}" == 'install ok installed' ]] ||
     { echo "KDE package missing: ${pkg} (${status})" >&2; exit 1; }
 done
@@ -197,7 +209,7 @@ HDMI, graphics acceleration, JL2101 1000Mbps, W522A, USB HID and
 Create the initial non-root account using Armbian first-login
 provisioning on a console before expecting SDDM user login.
 EOF
-chroot "${ROOT}" apt-get clean
+guest apt-get clean
 rm -rf "${ROOT}/var/lib/apt/lists/"*
 restore_guest_files
 sync
@@ -228,6 +240,15 @@ require_detached_image() {
   lsblk -o NAME,TYPE,RO,MOUNTPOINTS "${device}" >&2 || true
   if command -v fuser >/dev/null; then
     fuser -v "${device}" "${device}p2" >&2 || true
+    fuser -vm "${device}p2" >&2 || true
+  fi
+  # lsblk and findmnt alone only describe visible mounts; inspect other
+  # processes' mount tables for the same partition major:minor as well.
+  local devnum
+  devnum="$(lsblk -dn -o MAJ:MIN "${device}p2")" || devnum=""
+  if [[ -n "${devnum}" ]]; then
+    awk -v dev="${devnum}" '$3 == dev {print FILENAME, $0}' \
+      /proc/[0-9]*/mountinfo >&2 2>/dev/null || true
   fi
   return 1
 }

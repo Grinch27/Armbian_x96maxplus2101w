@@ -88,7 +88,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo env RUNNER_TEMP="${RUNNER_TEMP}" SOURCE_COMMIT="${GITHUB_SHA}" \
-            bash scripts/build_kde_image.sh \
+            unshare --mount --propagation private -- bash scripts/build_kde_image.sh \
               "${KDE_INPUT}" "${RUNNER_TEMP}/kde-output" \
               "${GITHUB_RUN_ID}" "${KDE_KERNEL}" "${KDE_SOURCE_SHA256}"
 
